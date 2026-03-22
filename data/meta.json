@@ -1,0 +1,57 @@
+{
+  "1833": {
+    "name": "\u5e73\u5b89\u597d\u533b\u751f",
+    "ticker": "1833.HK",
+    "source": "eastmoney",
+    "downloaded_at": "2026-03-22T20:31:37.631868",
+    "rows": 500,
+    "date_range": {
+      "start": "2024-03-07",
+      "end": "2026-03-20"
+    }
+  },
+  "9886": {
+    "name": "\u53ee\u5f53\u5065\u5eb7",
+    "ticker": "9886.HK",
+    "source": "yfinance",
+    "downloaded_at": "2026-03-22T20:31:40.857639",
+    "rows": 491,
+    "date_range": {
+      "start": "2024-03-20",
+      "end": "2026-03-20"
+    }
+  },
+  "0687": {
+    "name": "\u6cf0\u5347\u96c6\u56e2",
+    "ticker": "0687.HK",
+    "source": "eastmoney",
+    "downloaded_at": "2026-03-22T20:46:21.613031",
+    "rows": 500,
+    "date_range": {
+      "start": "2023-11-02",
+      "end": "2026-03-20"
+    }
+  },
+  "0772": {
+    "name": "\u9605\u6587\u96c6\u56e2",
+    "ticker": "0772.HK",
+    "source": "eastmoney",
+    "downloaded_at": "2026-03-22T20:46:29.474208",
+    "rows": 500,
+    "date_range": {
+      "start": "2024-03-07",
+      "end": "2026-03-20"
+    }
+  },
+  "0981": {
+    "name": "\u4e2d\u82af\u56fd\u9645",
+    "ticker": "0981.HK",
+    "source": "eastmoney",
+    "downloaded_at": "2026-03-22T20:46:35.451204",
+    "rows": 500,
+    "date_range": {
+      "start": "2024-03-07",
+      "end": "2026-03-20"
+    }
+  }
+}
