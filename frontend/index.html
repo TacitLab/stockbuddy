@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Buddy - 港股AI交易系统</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <span class="logo-icon">📈</span>
+                <span class="logo-text">Stock Buddy</span>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-page="dashboard">
+                    <span class="nav-icon">🏠</span>
+                    <span>总览</span>
+                </a>
+                <a href="#" class="nav-item" data-page="positions">
+                    <span class="nav-icon">💼</span>
+                    <span>持仓管理</span>
+                </a>
+                <a href="#" class="nav-item" data-page="analysis">
+                    <span class="nav-icon">🔍</span>
+                    <span>股票分析</span>
+                </a>
+                <a href="#" class="nav-item" data-page="sentiment">
+                    <span class="nav-icon">📰</span>
+                    <span>舆情监控</span>
+                </a>
+                <a href="#" class="nav-item" data-page="settings">
+                    <span class="nav-icon">⚙️</span>
+                    <span>设置</span>
+                </a>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="market-status">
+                    <span class="status-dot green"></span>
+                    <span>市场状态: 交易中</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 顶部栏 -->
+            <header class="header">
+                <h1 id="page-title">总览</h1>
+                <div class="header-actions">
+                    <button class="btn btn-primary" id="refresh-btn">
+                        <span>🔄</span> 刷新数据
+                    </button>
+                    <button class="btn btn-secondary" id="run-analysis-btn">
+                        <span>▶️</span> 运行分析
+                    </button>
+                </div>
+            </header>
+
+            <!-- 页面内容 -->
+            <div class="content" id="content-area">
+                <!-- 总览页 -->
+                <div id="page-dashboard" class="page active">
+                    <!-- 统计卡片 -->
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">总持仓市值</div>
+                            <div class="stat-value" id="total-value">--</div>
+                            <div class="stat-change" id="total-pnl">--</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">今日盈亏</div>
+                            <div class="stat-value" id="daily-pnl">--</div>
+                            <div class="stat-change" id="daily-pnl-percent">--</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">持仓数量</div>
+                            <div class="stat-value" id="position-count">--</div>
+                            <div class="stat-label-small">只股票</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">买入信号</div>
+                            <div class="stat-value buy" id="buy-signals">--</div>
+                            <div class="stat-label-small">个机会</div>
+                        </div>
+                    </div>
+
+                    <!-- 持仓列表 -->
+                    <div class="section">
+                        <h2 class="section-title">持仓股票</h2>
+                        <div class="table-container">
+                            <table class="data-table" id="positions-table">
+                                <thead>
+                                    <tr>
+                                        <th>股票</th>
+                                        <th>代码</th>
+                                        <th>持仓</th>
+                                        <th>成本价</th>
+                                        <th>现价</th>
+                                        <th>市值</th>
+                                        <th>盈亏</th>
+                                        <th>信号</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="positions-tbody">
+                                    <tr>
+                                        <td colspan="9" class="loading">加载中...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 持仓管理页 -->
+                <div id="page-positions" class="page">
+                    <div class="section">
+                        <div class="section-header">
+                            <h2 class="section-title">持仓列表</h2>
+                            <button class="btn btn-primary" id="add-position-btn">
+                                <span>+</span> 添加持仓
+                            </button>
+                        </div>
+                        <div class="table-container">
+                            <table class="data-table" id="manage-positions-table">
+                                <thead>
+                                    <tr>
+                                        <th>股票名称</th>
+                                        <th>股票代码</th>
+                                        <th>持仓数量</th>
+                                        <th>成本价</th>
+                                        <th>当前价</th>
+                                        <th>盈亏</th>
+                                        <th>策略</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="manage-positions-tbody">
+                                    <tr>
+                                        <td colspan="8" class="loading">加载中...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 股票分析页 -->
+                <div id="page-analysis" class="page">
+                    <div class="section">
+                        <div class="section-header">
+                            <h2 class="section-title">股票分析</h2>
+                        </div>
+                        
+                        <!-- 搜索框 -->
+                        <div class="search-box">
+                            <input type="text" id="stock-search" placeholder="输入股票名称或代码（如：中芯国际 或 0981.HK）">
+                            <button class="btn btn-primary" id="analyze-btn">分析</button>
+                        </div>
+                        
+                        <!-- 分析结果 -->
+                        <div id="analysis-result" class="analysis-result hidden">
+                            <div class="result-loading">分析中...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 舆情监控页 -->
+                <div id="page-sentiment" class="page">
+                    <div class="section">
+                        <h2 class="section-title">舆情监控</h2>
+                        <div id="sentiment-list">
+                            <p class="empty-state">选择持仓股票查看舆情分析</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 设置页 -->
+                <div id="page-settings" class="page">
+                    <div class="section">
+                        <h2 class="section-title">系统设置</h2>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label>默认策略</label>
+                                <select id="default-strategy">
+                                    <option value="A">A - 固定止损12%</option>
+                                    <option value="B">B - ATR动态止损</option>
+                                    <option value="C" selected>C - 混合自适应</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>大盘过滤</label>
+                                <label class="toggle">
+                                    <input type="checkbox" id="market-filter" checked>
+                                    <span class="toggle-slider"></span>
+                                    <span class="toggle-label">启用恒生指数MA20过滤</span>
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label>自动分析时间</label>
+                                <input type="time" id="auto-analysis-time" value="09:00">
+                            </div>
+                            <button class="btn btn-primary" id="save-settings">保存设置</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 添加持仓弹窗 -->
+    <div class="modal hidden" id="add-position-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加持仓</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <form id="add-position-form">
+                <div class="form-group">
+                    <label>股票名称</label>
+                    <input type="text" id="pos-name" required placeholder="如：中芯国际">
+                </div>
+                <div class="form-group">
+                    <label>股票代码</label>
+                    <input type="text" id="pos-ticker" required placeholder="如：0981.HK">
+                </div>
+                <div class="form-group">
+                    <label>持仓数量</label>
+                    <input type="number" id="pos-shares" required min="1" placeholder="1000">
+                </div>
+                <div class="form-group">
+                    <label>成本价</label>
+                    <input type="number" id="pos-cost" required step="0.001" placeholder="50.00">
+                </div>
+                <div class="form-group">
+                    <label>策略</label>
+                    <select id="pos-strategy">
+                        <option value="C" selected>C - 混合自适应</option>
+                        <option value="A">A - 固定止损12%</option>
+                        <option value="B">B - ATR动态止损</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>备注</label>
+                    <textarea id="pos-notes" rows="2"></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" id="cancel-add">取消</button>
+                    <button type="submit" class="btn btn-primary">添加</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
