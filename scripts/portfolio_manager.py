@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-港股持仓管理工具 - 管理持仓列表并批量分析。
+多市场股票持仓/关注池管理工具 - 基于 SQLite 管理关注股票、持仓并批量分析。
 
 用法:
     python3 portfolio_manager.py list
@@ -8,8 +8,11 @@
     python3 portfolio_manager.py remove <代码>
     python3 portfolio_manager.py update <代码> [--price <价格>] [--shares <数量>] [--note <备注>]
     python3 portfolio_manager.py analyze [--output <输出文件>]
+    python3 portfolio_manager.py watch-list
+    python3 portfolio_manager.py watch-add <代码>
+    python3 portfolio_manager.py watch-remove <代码>
 
-持仓文件默认保存在: ~/.stockbuddy/portfolio.json
+数据默认保存在: ~/.stockbuddy/stockbuddy.db
 """
 
 import sys
@@ -18,136 +21,166 @@ import argparse
 import os
 import time
 from datetime import datetime
-from pathlib import Path
 
-DATA_DIR = Path.home() / ".stockbuddy"
-PORTFOLIO_PATH = DATA_DIR / "portfolio.json"
-LEGACY_PORTFOLIO_PATH = Path.home() / ".hk_stock_portfolio.json"
-
-
-def load_portfolio() -> dict:
-    """加载持仓数据"""
-    if not PORTFOLIO_PATH.exists() and LEGACY_PORTFOLIO_PATH.exists():
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        PORTFOLIO_PATH.write_text(LEGACY_PORTFOLIO_PATH.read_text(encoding="utf-8"), encoding="utf-8")
-
-    if not PORTFOLIO_PATH.exists():
-        return {"positions": [], "updated_at": None}
-    with open(PORTFOLIO_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_portfolio(data: dict):
-    """保存持仓数据"""
-    data["updated_at"] = datetime.now().isoformat()
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(PORTFOLIO_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+try:
+    from db import (
+        DB_PATH,
+        get_watchlist_item,
+        init_db,
+        list_positions as db_list_positions,
+        list_watchlist as db_list_watchlist,
+        remove_position as db_remove_position,
+        set_watch_status,
+        update_position_fields,
+        upsert_position,
+        upsert_watchlist_item,
+    )
+    from analyze_stock import fetch_tencent_quote, normalize_stock_code, analyze_stock
+except ImportError:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, script_dir)
+    from db import (
+        DB_PATH,
+        get_watchlist_item,
+        init_db,
+        list_positions as db_list_positions,
+        list_watchlist as db_list_watchlist,
+        remove_position as db_remove_position,
+        set_watch_status,
+        update_position_fields,
+        upsert_position,
+        upsert_watchlist_item,
+    )
+    from analyze_stock import fetch_tencent_quote, normalize_stock_code, analyze_stock
 
 
 def normalize_code(code: str) -> str:
-    """标准化港股代码"""
-    code = code.strip().upper()
-    if not code.endswith(".HK"):
-        digits = code.lstrip("0")
-        if digits.isdigit():
-            code = code.zfill(4) + ".HK"
-    return code
+    return normalize_stock_code(code)["code"]
 
+
+def ensure_watch_item(code: str, watched: bool = False) -> dict:
+    stock = normalize_stock_code(code)
+    quote = fetch_tencent_quote(stock["code"])
+    name = quote.get("name") if quote else None
+    return upsert_watchlist_item(
+        code=stock["code"],
+        market=stock["market"],
+        tencent_symbol=stock["tencent_symbol"],
+        name=name,
+        exchange=quote.get("exchange", stock.get("exchange")) if quote else stock.get("exchange"),
+        currency=quote.get("currency") if quote else None,
+        last_price=quote.get("price") if quote else None,
+        pe=quote.get("pe") if quote else None,
+        pb=quote.get("pb") if quote else None,
+        market_cap=quote.get("market_cap") if quote else None,
+        week52_high=quote.get("52w_high") if quote else None,
+        week52_low=quote.get("52w_low") if quote else None,
+        quote_time=quote.get("timestamp") if quote else None,
+        is_watched=watched,
+        meta=quote or stock,
+    )
+
+
+# ─────────────────────────────────────────────
+#  持仓管理
+# ─────────────────────────────────────────────
 
 def list_positions():
-    """列出所有持仓"""
-    portfolio = load_portfolio()
-    positions = portfolio.get("positions", [])
+    init_db()
+    positions = db_list_positions()
     if not positions:
         print(json.dumps({"message": "持仓为空", "positions": []}, ensure_ascii=False, indent=2))
         return
     print(json.dumps({
         "total_positions": len(positions),
         "positions": positions,
-        "portfolio_file": str(PORTFOLIO_PATH),
-        "updated_at": portfolio.get("updated_at"),
+        "portfolio_db": str(DB_PATH),
+        "updated_at": datetime.now().isoformat(),
     }, ensure_ascii=False, indent=2))
 
 
 def add_position(code: str, price: float, shares: int, date: str = None, note: str = ""):
-    """添加持仓"""
-    code = normalize_code(code)
-    portfolio = load_portfolio()
-    positions = portfolio.get("positions", [])
+    init_db()
+    normalized = normalize_stock_code(code)
+    existing = next((p for p in db_list_positions() if p["code"] == normalized["code"]), None)
+    if existing:
+        print(json.dumps({"error": f"{normalized['code']} 已在持仓中，请使用 update 命令更新"}, ensure_ascii=False))
+        return
 
-    # 检查是否已存在
-    for pos in positions:
-        if pos["code"] == code:
-            print(json.dumps({"error": f"{code} 已在持仓中，请使用 update 命令更新"}, ensure_ascii=False))
-            return
-
-    position = {
-        "code": code,
-        "buy_price": price,
-        "shares": shares,
-        "buy_date": date or datetime.now().strftime("%Y-%m-%d"),
-        "note": note,
-        "added_at": datetime.now().isoformat(),
-    }
-    positions.append(position)
-    portfolio["positions"] = positions
-    save_portfolio(portfolio)
-    print(json.dumps({"message": f"已添加 {code}", "position": position}, ensure_ascii=False, indent=2))
+    watch = ensure_watch_item(normalized["code"], watched=True)
+    position = upsert_position(
+        code=normalized["code"],
+        market=normalized["market"],
+        tencent_symbol=normalized["tencent_symbol"],
+        buy_price=price,
+        shares=shares,
+        buy_date=date or datetime.now().strftime("%Y-%m-%d"),
+        note=note,
+        name=watch.get("name"),
+        currency=watch.get("currency"),
+        meta=json.loads(watch["meta_json"]) if watch.get("meta_json") else None,
+    )
+    print(json.dumps({"message": f"已添加 {normalized['code']}", "position": position}, ensure_ascii=False, indent=2))
 
 
 def remove_position(code: str):
-    """移除持仓"""
-    code = normalize_code(code)
-    portfolio = load_portfolio()
-    positions = portfolio.get("positions", [])
-    new_positions = [p for p in positions if p["code"] != code]
-    if len(new_positions) == len(positions):
-        print(json.dumps({"error": f"{code} 不在持仓中"}, ensure_ascii=False))
+    init_db()
+    normalized_code = normalize_code(code)
+    removed = db_remove_position(normalized_code)
+    if not removed:
+        print(json.dumps({"error": f"{normalized_code} 不在持仓中"}, ensure_ascii=False))
         return
-    portfolio["positions"] = new_positions
-    save_portfolio(portfolio)
-    print(json.dumps({"message": f"已移除 {code}"}, ensure_ascii=False, indent=2))
+    print(json.dumps({"message": f"已移除 {normalized_code}"}, ensure_ascii=False, indent=2))
 
 
 def update_position(code: str, price: float = None, shares: int = None, note: str = None):
-    """更新持仓信息"""
-    code = normalize_code(code)
-    portfolio = load_portfolio()
-    positions = portfolio.get("positions", [])
-    found = False
-    for pos in positions:
-        if pos["code"] == code:
-            if price is not None:
-                pos["buy_price"] = price
-            if shares is not None:
-                pos["shares"] = shares
-            if note is not None:
-                pos["note"] = note
-            pos["updated_at"] = datetime.now().isoformat()
-            found = True
-            print(json.dumps({"message": f"已更新 {code}", "position": pos}, ensure_ascii=False, indent=2))
-            break
-    if not found:
-        print(json.dumps({"error": f"{code} 不在持仓中"}, ensure_ascii=False))
+    init_db()
+    normalized_code = normalize_code(code)
+    position = update_position_fields(normalized_code, price=price, shares=shares, note=note)
+    if not position:
+        print(json.dumps({"error": f"{normalized_code} 不在持仓中"}, ensure_ascii=False))
         return
-    portfolio["positions"] = positions
-    save_portfolio(portfolio)
+    print(json.dumps({"message": f"已更新 {normalized_code}", "position": position}, ensure_ascii=False, indent=2))
 
+
+# ─────────────────────────────────────────────
+#  关注池管理
+# ─────────────────────────────────────────────
+
+def list_watchlist():
+    init_db()
+    items = db_list_watchlist(only_watched=True)
+    print(json.dumps({
+        "total_watchlist": len(items),
+        "watchlist": items,
+        "portfolio_db": str(DB_PATH),
+        "updated_at": datetime.now().isoformat(),
+    }, ensure_ascii=False, indent=2))
+
+
+def add_watch(code: str):
+    init_db()
+    watch = ensure_watch_item(code, watched=True)
+    print(json.dumps({"message": f"已关注 {watch['code']}", "watch": watch}, ensure_ascii=False, indent=2))
+
+
+def remove_watch(code: str):
+    init_db()
+    normalized_code = normalize_code(code)
+    watch = set_watch_status(normalized_code, False)
+    if not watch:
+        print(json.dumps({"error": f"{normalized_code} 不在关注池中"}, ensure_ascii=False))
+        return
+    print(json.dumps({"message": f"已取消关注 {normalized_code}", "watch": watch}, ensure_ascii=False, indent=2))
+
+
+# ─────────────────────────────────────────────
+#  批量分析
+# ─────────────────────────────────────────────
 
 def analyze_portfolio(output_file: str = None):
-    """批量分析所有持仓"""
-    # 延迟导入，避免未安装yfinance时也能管理持仓
-    try:
-        from analyze_stock import analyze_stock
-    except ImportError:
-        # 尝试从同目录导入
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        sys.path.insert(0, script_dir)
-        from analyze_stock import analyze_stock
-
-    portfolio = load_portfolio()
-    positions = portfolio.get("positions", [])
+    init_db()
+    positions = db_list_positions()
     if not positions:
         print(json.dumps({"message": "持仓为空，无法分析"}, ensure_ascii=False, indent=2))
         return
@@ -158,7 +191,6 @@ def analyze_portfolio(output_file: str = None):
         print(f"正在分析 {code} ({i+1}/{len(positions)})...", file=sys.stderr)
         analysis = analyze_stock(code)
 
-        # 计算盈亏
         if analysis.get("current_price") and pos.get("buy_price"):
             current = analysis["current_price"]
             buy = pos["buy_price"]
@@ -175,15 +207,15 @@ def analyze_portfolio(output_file: str = None):
                 "pnl": round(pnl, 2),
                 "pnl_pct": round(pnl_pct, 2),
                 "note": pos.get("note", ""),
+                "currency": pos.get("currency"),
+                "market": pos.get("market"),
             }
 
         results.append(analysis)
 
-        # 批量请求间隔：避免连续请求触发限频（最后一只不需要等待）
         if i < len(positions) - 1 and not analysis.get("_from_cache"):
             time.sleep(2)
 
-    # 汇总
     total_cost = sum(r.get("portfolio_info", {}).get("cost", 0) for r in results)
     total_value = sum(r.get("portfolio_info", {}).get("market_value", 0) for r in results)
     total_pnl = total_value - total_cost
@@ -209,13 +241,11 @@ def analyze_portfolio(output_file: str = None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="港股持仓管理工具")
+    parser = argparse.ArgumentParser(description="多市场股票持仓/关注池管理工具")
     subparsers = parser.add_subparsers(dest="command", help="子命令")
 
-    # list
     subparsers.add_parser("list", help="列出所有持仓")
 
-    # add
     add_parser = subparsers.add_parser("add", help="添加持仓")
     add_parser.add_argument("code", help="股票代码")
     add_parser.add_argument("--price", type=float, required=True, help="买入价格")
@@ -223,20 +253,23 @@ def main():
     add_parser.add_argument("--date", help="买入日期 (YYYY-MM-DD)")
     add_parser.add_argument("--note", default="", help="备注")
 
-    # remove
     rm_parser = subparsers.add_parser("remove", help="移除持仓")
     rm_parser.add_argument("code", help="股票代码")
 
-    # update
     up_parser = subparsers.add_parser("update", help="更新持仓")
     up_parser.add_argument("code", help="股票代码")
     up_parser.add_argument("--price", type=float, help="买入价格")
     up_parser.add_argument("--shares", type=int, help="持有数量")
     up_parser.add_argument("--note", help="备注")
 
-    # analyze
     analyze_parser = subparsers.add_parser("analyze", help="批量分析持仓")
     analyze_parser.add_argument("--output", help="输出JSON文件")
+
+    watch_list_parser = subparsers.add_parser("watch-list", help="列出关注池")
+    watch_add_parser = subparsers.add_parser("watch-add", help="添加关注股票")
+    watch_add_parser.add_argument("code", help="股票代码")
+    watch_remove_parser = subparsers.add_parser("watch-remove", help="取消关注股票")
+    watch_remove_parser.add_argument("code", help="股票代码")
 
     args = parser.parse_args()
 
@@ -250,6 +283,12 @@ def main():
         update_position(args.code, args.price, args.shares, args.note)
     elif args.command == "analyze":
         analyze_portfolio(args.output)
+    elif args.command == "watch-list":
+        list_watchlist()
+    elif args.command == "watch-add":
+        add_watch(args.code)
+    elif args.command == "watch-remove":
+        remove_watch(args.code)
     else:
         parser.print_help()
 
