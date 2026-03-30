@@ -9,7 +9,7 @@
     python3 portfolio_manager.py update <代码> [--price <价格>] [--shares <数量>] [--note <备注>]
     python3 portfolio_manager.py analyze [--output <输出文件>]
 
-持仓文件默认保存在: ~/.hk_stock_portfolio.json
+持仓文件默认保存在: ~/.stockbuddy/portfolio.json
 """
 
 import sys
@@ -20,11 +20,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-PORTFOLIO_PATH = Path.home() / ".hk_stock_portfolio.json"
+DATA_DIR = Path.home() / ".stockbuddy"
+PORTFOLIO_PATH = DATA_DIR / "portfolio.json"
+LEGACY_PORTFOLIO_PATH = Path.home() / ".hk_stock_portfolio.json"
 
 
 def load_portfolio() -> dict:
     """加载持仓数据"""
+    if not PORTFOLIO_PATH.exists() and LEGACY_PORTFOLIO_PATH.exists():
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        PORTFOLIO_PATH.write_text(LEGACY_PORTFOLIO_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
     if not PORTFOLIO_PATH.exists():
         return {"positions": [], "updated_at": None}
     with open(PORTFOLIO_PATH, "r", encoding="utf-8") as f:
@@ -34,6 +40,7 @@ def load_portfolio() -> dict:
 def save_portfolio(data: dict):
     """保存持仓数据"""
     data["updated_at"] = datetime.now().isoformat()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(PORTFOLIO_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 

@@ -38,8 +38,10 @@ except ImportError:
 #  缓存与重试机制
 # ─────────────────────────────────────────────
 
-CACHE_DIR = Path.home() / ".stock_buddy_cache"
+DATA_DIR = Path.home() / ".stockbuddy"
+CACHE_DIR = DATA_DIR / "cache"
 CACHE_TTL_SECONDS = 600  # 缓存有效期 10 分钟
+LEGACY_CACHE_DIR = Path.home() / ".stock_buddy_cache"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2
 
@@ -54,7 +56,21 @@ def _read_cache(code: str, period: str) -> dict | None:
     """读取缓存"""
     cache_file = CACHE_DIR / _cache_key(code, period)
     if not cache_file.exists():
+        legacy_cache_file = LEGACY_CACHE_DIR / _cache_key(code, period)
+        if legacy_cache_file.exists():
+            try:
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(
+                    legacy_cache_file.read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+            except OSError:
+                cache_file = legacy_cache_file
+
+    if not cache_file.exists():
         return None
+
     try:
         with open(cache_file, "r", encoding="utf-8") as f:
             cached = json.load(f)
@@ -69,6 +85,7 @@ def _read_cache(code: str, period: str) -> dict | None:
 
 def _write_cache(code: str, period: str, data: dict):
     """写入缓存"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = CACHE_DIR / _cache_key(code, period)
     try:
@@ -710,8 +727,12 @@ def main():
 
     if args.clear_cache:
         import shutil
-        if CACHE_DIR.exists():
-            shutil.rmtree(CACHE_DIR)
+        cleared = False
+        for path in (CACHE_DIR, LEGACY_CACHE_DIR):
+            if path.exists():
+                shutil.rmtree(path)
+                cleared = True
+        if cleared:
             print("✅ 缓存已清除")
         else:
             print("ℹ️ 无缓存可清除")
