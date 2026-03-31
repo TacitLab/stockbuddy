@@ -163,6 +163,97 @@ def fetch_tencent_quote(code: str) -> dict:
     return {}
 
 
+def fetch_eastmoney_quote(code: str) -> dict:
+    """获取东方财富实时行情（当前仅作为 A 股 fallback）。"""
+    stock = normalize_stock_code(code)
+    if stock['market'] not in ('SH', 'SZ') or len(stock['code']) != 8:
+        return {}
+
+    raw_code = stock['code'][2:]
+    secid_prefix = '1' if stock['market'] == 'SH' else '0'
+    fields = 'f43,f44,f45,f46,f57,f58,f60,f116,f164,f167,f168,f169,f170'
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid_prefix}.{raw_code}&fields={fields}"
+
+    def scaled(value, digits=100):
+        if value in (None, ''):
+            return None
+        try:
+            return round(float(value) / digits, 2)
+        except (TypeError, ValueError):
+            return None
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': 'https://quote.eastmoney.com/',
+            })
+            with urllib.request.urlopen(req, timeout=10) as response:
+                payload = json.loads(response.read().decode('utf-8'))
+                data = payload.get('data') or {}
+                price = scaled(data.get('f43'))
+                if not price:
+                    return {}
+                change_amount = scaled(data.get('f169'))
+                change_pct = scaled(data.get('f170'))
+                return {
+                    'name': data.get('f58') or stock['code'],
+                    'code': stock['code'],
+                    'market': stock['market'],
+                    'exchange': stock.get('exchange'),
+                    'tencent_symbol': stock['tencent_symbol'],
+                    'price': price,
+                    'prev_close': scaled(data.get('f60')),
+                    'open': scaled(data.get('f46')),
+                    'volume': None,
+                    'high': scaled(data.get('f44')),
+                    'low': scaled(data.get('f45')),
+                    'change_amount': change_amount,
+                    'change_pct': change_pct,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'currency': 'CNY',
+                    'pe': scaled(data.get('f164')),
+                    'pb': scaled(data.get('f167')),
+                    'market_cap': data.get('f116'),
+                    '52w_high': None,
+                    '52w_low': None,
+                    'raw_code': data.get('f57') or raw_code,
+                    'quote_source': 'eastmoney',
+                }
+        except (urllib.error.URLError, json.JSONDecodeError) as e:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_BASE_DELAY * (attempt + 1))
+            else:
+                raise Exception(f"获取东方财富行情失败: {e}")
+    return {}
+
+
+def fetch_quote_with_fallback(code: str) -> dict:
+    """先取主源；A 股主源失败时自动尝试东方财富。"""
+    stock = normalize_stock_code(code)
+    errors = []
+
+    try:
+        quote = fetch_tencent_quote(code)
+        if quote and quote.get('price'):
+            quote.setdefault('quote_source', 'tencent')
+            return quote
+    except Exception as e:
+        errors.append(f"tencent={e}")
+
+    if stock['market'] in ('SH', 'SZ'):
+        try:
+            quote = fetch_eastmoney_quote(code)
+            if quote and quote.get('price'):
+                return quote
+        except Exception as e:
+            errors.append(f"eastmoney={e}")
+
+    if errors:
+        raise Exception('; '.join(errors))
+    return {}
+
+
 def _parse_tencent_quote(data: str, symbol: str, stock: dict) -> dict:
     """解析腾讯财经实时行情响应"""
     var_name = f"v_{symbol}"
@@ -275,6 +366,63 @@ def _parse_tencent_kline(data: dict, symbol: str) -> pd.DataFrame:
     return df
 
 
+def fetch_eastmoney_kline(code: str, days: int = 120) -> pd.DataFrame:
+    """获取东方财富日线（当前仅作为 A 股 fallback）。"""
+    stock = normalize_stock_code(code)
+    if stock['market'] not in ('SH', 'SZ') or len(stock['code']) != 8:
+        return pd.DataFrame()
+
+    raw_code = stock['code'][2:]
+    secid_prefix = '1' if stock['market'] == 'SH' else '0'
+    end = datetime.now().strftime('%Y%m%d')
+    # 多抓一些，避免交易日折算不足
+    start = (datetime.now() - timedelta(days=max(days * 2, 180))).strftime('%Y%m%d')
+    url = (
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+        f"?secid={secid_prefix}.{raw_code}"
+        "&fields1=f1,f2,f3,f4,f5,f6"
+        "&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
+        "&klt=101&fqt=1"
+        f"&beg={start}&end={end}"
+    )
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': 'https://quote.eastmoney.com/',
+            })
+            with urllib.request.urlopen(req, timeout=20) as response:
+                payload = json.loads(response.read().decode('utf-8'))
+                klines = ((payload.get('data') or {}).get('klines')) or []
+                if not klines:
+                    return pd.DataFrame()
+                records = []
+                for item in klines:
+                    parts = item.split(',')
+                    if len(parts) < 6:
+                        continue
+                    records.append({
+                        'Date': parts[0],
+                        'Open': float(parts[1]),
+                        'Close': float(parts[2]),
+                        'High': float(parts[3]),
+                        'Low': float(parts[4]),
+                        'Volume': float(parts[5]),
+                    })
+                df = pd.DataFrame(records)
+                if not df.empty:
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    df.set_index('Date', inplace=True)
+                return df
+        except (urllib.error.URLError, json.JSONDecodeError, ValueError) as e:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_BASE_DELAY * (attempt + 1))
+            else:
+                raise Exception(f"获取东方财富K线失败: {e}")
+    return pd.DataFrame()
+
+
 def fetch_us_kline_yahoo(symbol: str, period: str = '6mo') -> pd.DataFrame:
     range_map = {
         '1mo': '1mo',
@@ -338,12 +486,13 @@ def min_kline_points(required_days: int) -> int:
     return 20 if required_days <= 30 else 30
 
 
-def refresh_kline_cache(code: str, required_days: int, period: str = '6mo') -> pd.DataFrame:
-    """使用 SQLite 保存日线数据，并按需增量刷新。"""
+def refresh_kline_cache(code: str, required_days: int, period: str = '6mo') -> tuple[pd.DataFrame, str]:
+    """使用 SQLite 保存日线数据，并按需增量刷新。返回 (hist, source)。"""
     stock = normalize_stock_code(code)
     buffer_days = 30
     latest_date = get_latest_kline_date(code)
     fetch_days = max(required_days + buffer_days, 60)
+    source_used = 'tencent'
 
     if latest_date:
         latest_dt = datetime.strptime(latest_date, "%Y-%m-%d")
@@ -354,20 +503,31 @@ def refresh_kline_cache(code: str, required_days: int, period: str = '6mo') -> p
             fetch_days = max(missing_days + buffer_days, 60)
 
     fetched = fetch_tencent_kline(code, fetch_days)
-    if stock['market'] == 'US' and len(fetched) <= 2:
+    if stock['market'] in ('SH', 'SZ') and len(fetched) <= 2:
+        fetched = fetch_eastmoney_kline(code, fetch_days)
+        source_used = 'eastmoney' if not fetched.empty else source_used
+    elif stock['market'] == 'US' and len(fetched) <= 2:
         fetched = fetch_us_kline_yahoo(stock['code'], period)
+        source_used = 'yahoo' if not fetched.empty else source_used
+
     if not fetched.empty:
-        upsert_kline_df(code, fetched, source='yahoo' if stock['market'] == 'US' and len(fetched) > 2 else 'tencent')
+        upsert_kline_df(code, fetched, source=source_used)
 
     hist = get_kline_df(code, required_days + buffer_days)
     if len(hist) < min_kline_points(required_days):
         fallback = fetch_tencent_kline(code, required_days + buffer_days)
-        if stock['market'] == 'US' and len(fallback) <= 2:
+        fallback_source = 'tencent'
+        if stock['market'] in ('SH', 'SZ') and len(fallback) <= 2:
+            fallback = fetch_eastmoney_kline(code, required_days + buffer_days)
+            fallback_source = 'eastmoney' if not fallback.empty else fallback_source
+        elif stock['market'] == 'US' and len(fallback) <= 2:
             fallback = fetch_us_kline_yahoo(stock['code'], period)
+            fallback_source = 'yahoo' if not fallback.empty else fallback_source
         if not fallback.empty:
-            upsert_kline_df(code, fallback, source='yahoo' if stock['market'] == 'US' and len(fallback) > 2 else 'tencent')
+            upsert_kline_df(code, fallback, source=fallback_source)
             hist = get_kline_df(code, required_days + buffer_days)
-    return hist
+            source_used = fallback_source
+    return hist, source_used
 
 
 # ─────────────────────────────────────────────
@@ -886,10 +1046,15 @@ def analyze_stock(code: str, period: str = "6mo", use_cache: bool = True) -> dic
     result = {"code": full_code, "market": stock['market'], "analysis_time": datetime.now().isoformat(), "error": None}
 
     try:
-        quote = fetch_tencent_quote(full_code)
+        quote = fetch_quote_with_fallback(full_code)
         if not quote or not quote.get("price"):
             result["error"] = f"无法获取 {full_code} 的实时行情"
             return result
+
+        result["data_sources"] = {
+            "quote": quote.get("quote_source", "tencent"),
+            "kline": None,
+        }
 
         upsert_watchlist_item(
             code=full_code,
@@ -915,7 +1080,8 @@ def analyze_stock(code: str, period: str = "6mo", use_cache: bool = True) -> dic
         result["price_change_pct"] = quote.get("change_pct")
 
         days = period_to_days(period)
-        hist = refresh_kline_cache(full_code, days, period)
+        hist, kline_source = refresh_kline_cache(full_code, days, period)
+        result["data_sources"]["kline"] = kline_source
         if hist.empty or len(hist) < min_kline_points(days):
             result["error"] = f"无法获取 {full_code} 的历史K线数据 (仅获得 {len(hist)} 条)"
             return result

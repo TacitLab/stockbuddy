@@ -133,3 +133,4 @@ bash {{SKILL_DIR}}/scripts/install_deps.sh
 | `scripts/install_deps.sh` | Python 依赖安装脚本 |
 | `references/technical_indicators.md` | 技术指标详解和评分标准 |
 | `references/output_templates.md` | 分析报告输出模板 |
+| `references/data-source-roadmap.md` | 数据源升级路线图：主源 / fallback / 事件层规划；仅在需要扩展数据源或接入事件信息时读取 |
