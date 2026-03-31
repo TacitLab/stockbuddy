@@ -50,6 +50,7 @@ bash {{SKILL_DIR}}/scripts/install_deps.sh
 3. **解读并呈现结果**
    - 脚本输出 JSON 格式分析数据
    - 按 `references/output_templates.md` 中"单只股票分析报告"模板转化为用户友好的中文报告
+   - 最终结果直接输出为标准 Markdown 正文，不要包在代码块里；默认可以保留规范 Markdown 表格，并确保标题层级、分隔线与表格语法标准化
    - **结尾必须附上风险免责提示**
 
 ### 场景二：持仓批量分析
@@ -73,6 +74,7 @@ bash {{SKILL_DIR}}/scripts/install_deps.sh
 
 4. **解读并呈现结果**
    - 按 `references/output_templates.md` 中"持仓批量分析报告"模板呈现
+   - 直接输出为标准 Markdown 正文，不要包在代码块里；可使用规范 Markdown 表格与列表混合呈现，保证不同平台可读性
    - 包含每只股票的操作建议和整体盈亏汇总
    - **结尾必须附上风险免责提示**
 
