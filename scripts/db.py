@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +18,8 @@ DATA_DIR = Path.home() / ".stockbuddy"
 DB_PATH = DATA_DIR / "stockbuddy.db"
 ANALYSIS_CACHE_TTL_SECONDS = 600
 ANALYSIS_CACHE_MAX_ROWS = 1000
+AUX_CACHE_TTL_SECONDS = 1800
+AUX_CACHE_MAX_ROWS = 2000
 
 
 def _utc_now_iso() -> str:
@@ -123,6 +125,21 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_analysis_cache_code_period
             ON analysis_cache (code, period, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS aux_cache (
+                cache_key TEXT PRIMARY KEY,
+                code TEXT NOT NULL,
+                category TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_aux_cache_expires_at
+            ON aux_cache (expires_at);
+
+            CREATE INDEX IF NOT EXISTS idx_aux_cache_code_category
+            ON aux_cache (code, category, created_at DESC);
             """
         )
         conn.commit()
@@ -165,6 +182,84 @@ def clear_analysis_cache() -> int:
         return count
 
 
+def cleanup_aux_cache(conn: sqlite3.Connection | None = None) -> None:
+    own_conn = conn is None
+    conn = conn or get_connection()
+    try:
+        now = _utc_now_iso()
+        conn.execute("DELETE FROM aux_cache WHERE expires_at <= ?", (now,))
+        overflow = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM aux_cache"
+        ).fetchone()["cnt"] - AUX_CACHE_MAX_ROWS
+        if overflow > 0:
+            conn.execute(
+                """
+                DELETE FROM aux_cache
+                WHERE cache_key IN (
+                    SELECT cache_key
+                    FROM aux_cache
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                )
+                """,
+                (overflow,),
+            )
+        conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def clear_aux_cache() -> int:
+    init_db()
+    with get_connection() as conn:
+        count = conn.execute("SELECT COUNT(*) AS cnt FROM aux_cache").fetchone()["cnt"]
+        conn.execute("DELETE FROM aux_cache")
+        conn.commit()
+        return count
+
+
+def get_cached_aux(code: str, category: str) -> dict | None:
+    init_db()
+    with get_connection() as conn:
+        cleanup_aux_cache(conn)
+        cache_key = f"{code}:{category}"
+        row = conn.execute(
+            """
+            SELECT result_json
+            FROM aux_cache
+            WHERE cache_key = ? AND expires_at > ?
+            """,
+            (cache_key, _utc_now_iso()),
+        ).fetchone()
+        if not row:
+            return None
+        result = json.loads(row["result_json"])
+        result["_from_cache"] = True
+        return result
+
+
+def set_cached_aux(code: str, category: str, result: dict, ttl_seconds: int = AUX_CACHE_TTL_SECONDS) -> None:
+    init_db()
+    now = _utc_now_iso()
+    expires_at = (datetime.utcnow() + timedelta(seconds=ttl_seconds)).replace(microsecond=0).isoformat()
+    cache_key = f"{code}:{category}"
+    with get_connection() as conn:
+        cleanup_aux_cache(conn)
+        conn.execute(
+            """
+            INSERT INTO aux_cache (cache_key, code, category, result_json, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                result_json = excluded.result_json,
+                expires_at = excluded.expires_at,
+                created_at = excluded.created_at
+            """,
+            (cache_key, code, category, json.dumps(result, ensure_ascii=False), expires_at, now),
+        )
+        conn.commit()
+
+
 def get_cached_analysis(code: str, period: str) -> dict | None:
     init_db()
     with get_connection() as conn:
@@ -188,9 +283,7 @@ def get_cached_analysis(code: str, period: str) -> dict | None:
 def set_cached_analysis(code: str, period: str, result: dict) -> None:
     init_db()
     now = _utc_now_iso()
-    expires_at = datetime.utcfromtimestamp(
-        datetime.utcnow().timestamp() + ANALYSIS_CACHE_TTL_SECONDS
-    ).replace(microsecond=0).isoformat()
+    expires_at = (datetime.utcnow() + timedelta(seconds=ANALYSIS_CACHE_TTL_SECONDS)).replace(microsecond=0).isoformat()
     cache_key = f"{code}:{period}"
     with get_connection() as conn:
         cleanup_analysis_cache(conn)
