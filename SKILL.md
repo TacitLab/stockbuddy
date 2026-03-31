@@ -1,6 +1,6 @@
 ---
 name: stockbuddy
-description: 多市场股票分析助手，提供 A 股、港股、美股的技术面和基础估值分析，给出买入/卖出操作建议。支持单只股票查询分析、持仓批量分析、关注股票管理和持仓管理。当用户提到"股票分析"、"持仓分析"、"关注股票"、"买入建议"、"卖出建议"，或提供 A 股代码（如 600519 / SH600519）、港股代码（如 0700.HK / 700）、美股代码（如 AAPL / TSLA）时触发此技能。
+description: 多市场股票分析助手，提供 A 股、港股、美股的技术面和基础估值分析，给出买入/卖出操作建议。支持单只股票查询分析、持仓批量分析、关注股票管理和持仓管理。当用户提到股票分析、持仓分析、关注股票、买入建议、卖出建议，或直接提供股票代码 / 股票名称请求分析时触发此技能。
 ---
 
 # 多市场股票分析助手 (StockBuddy)
@@ -29,7 +29,7 @@ bash {{SKILL_DIR}}/scripts/install_deps.sh
 
 ### 场景一：分析单只股票
 
-触发示例："分析腾讯"、"0700.HK 能不能买"、"看看比亚迪怎么样"、"帮我看下 9988"
+触发示例："分析腾讯"、"这只股票能不能买"、"看看比亚迪怎么样"、"帮我分析一下这只票"
 
 **步骤：**
 
@@ -133,5 +133,4 @@ bash {{SKILL_DIR}}/scripts/install_deps.sh
 | `scripts/portfolio_manager.py` | 持仓管理脚本，支持增删改查和批量分析 |
 | `scripts/install_deps.sh` | Python 依赖安装脚本 |
 | `references/technical_indicators.md` | 技术指标详解和评分标准 |
-| `references/hk_stock_codes.md` | 常见港股代码与中文名称映射表 |
 | `references/output_templates.md` | 分析报告输出模板 |
