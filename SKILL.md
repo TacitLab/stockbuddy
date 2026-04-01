@@ -1,143 +1,176 @@
 ---
 name: stockbuddy
-description: 多市场股票分析助手，提供 A 股、港股、美股的技术面和基础估值分析，给出买入/卖出操作建议。支持单只股票查询分析、持仓批量分析、关注股票管理和持仓管理。当用户提到股票分析、持仓分析、关注股票、买入建议、卖出建议，或直接提供股票代码 / 股票名称请求分析时触发此技能。
+description: Multi-market stock analysis and portfolio execution assistant for CN, HK, and US equities. Provides technical + basic valuation analysis, portfolio review, account-aware position tracking, cash balances by market/currency, and execution-aware suggestions that respect lot size, odd-lot support, and trading constraints. Use when the user asks for stock analysis, portfolio analysis, buy/sell advice, watchlist management, position management, account cash tracking, rebalancing, or practical trading actions for a stock code or company name.
 ---
 
-# 多市场股票分析助手 (StockBuddy)
+# StockBuddy
 
-## 概述
+## Overview
 
-A 股、港股、美股的技术面与基础估值综合分析工具，输出量化评分和明确操作建议（强烈买入/买入/持有/卖出/强烈卖出）。默认以**决策优先**的方式返回结果：先给简明结论、评分/置信度、事件修正后的二次建议与挂单实操建议；只有在用户明确要求时才展开完整长报告。
+StockBuddy is a stock analysis and portfolio execution support skill for A-share, Hong Kong, and US equities. It outputs quantified scores and clear action labels (Strong Buy / Buy / Hold / Sell / Strong Sell). By default, responses are **decision-first**: give the concise conclusion, score/confidence, event-adjusted second-pass suggestion, and practical order ideas before expanding into a long-form report.
 
-四大核心场景：
-1. **单只股票分析** — 对指定股票进行完整技术面+基本面分析，给出操作建议
-2. **持仓批量分析** — 对用户所有持仓股票批量分析，给出各股操作建议和整体盈亏统计
-3. **持仓管理** — 增删改查持仓记录
-4. **关注池管理** — 增删改查关注股票，并记录股票基本信息
+**Design principle: separate durable facts from real-time derived values.**
+- **Persist durable facts**: share count, cost basis, account, cash balance, market/currency, lot size, odd-lot support, and other user-confirmed trading constraints
+- **Compute in real time**: latest price, market value, position weight, unrealized P&L, executable buy/sell size, and whether partial selling is actually possible
+- Do **not** write latest price, position weight, or unrealized P&L back as durable truth in the database; compute them during analysis to avoid stale data and hallucination drift
 
-## 环境准备
+Five core scenarios:
+1. **Single-stock analysis** — Analyze one stock with technical + basic valuation signals and produce an action recommendation
+2. **Batch portfolio analysis** — Analyze all current positions and summarize both stock-level actions and overall portfolio status
+3. **Position management** — Add, update, remove, and inspect positions
+4. **Account and allocation management** — Track account, cash, market/currency, and use them to compute position weights and execution constraints
+5. **Watchlist management** — Add, remove, and inspect watched stocks while storing basic stock metadata and trading rules
 
-仅在依赖缺失，或脚本运行时报缺包错误时，再执行安装脚本：
+## Environment Setup
+
+Only install dependencies when they are actually missing, or when a script fails with a missing-package error:
 
 ```bash
 bash {{SKILL_DIR}}/scripts/install_deps.sh
 ```
 
-所需依赖：`numpy`、`pandas`、Python 内置 `sqlite3`（无需 yfinance，已改用腾讯财经数据源）
+Required dependencies: `numpy`, `pandas`, built-in Python `sqlite3`.
+No `yfinance` dependency is required; the current implementation mainly uses Tencent Finance data.
 
-## 核心工作流
+## Core Workflow
 
-### 场景一：分析单只股票
+### Scenario 1: Analyze a Single Stock
 
-触发示例："分析腾讯"、"这只股票能不能买"、"看看比亚迪怎么样"、"帮我分析一下这只票"
+Trigger examples: "analyze Tencent", "can I buy this stock", "look at BYD", "analyze this ticker"
 
-**步骤：**
+**Steps:**
 
-1. **识别股票代码**
-   - 港股：标准化为 `XXXX.HK`
-   - A 股：标准化为 `SH600519` / `SZ000001`
-   - 美股：标准化为 `AAPL` / `TSLA`
-   - 用户提供中文名称时，可先根据上下文判断市场；无法唯一匹配时再向用户确认
+1. **Normalize the stock code**
+   - Hong Kong stocks: normalize to `XXXX.HK`
+   - A-shares: normalize to `SH600519` / `SZ000001`
+   - US stocks: normalize to `AAPL` / `TSLA`
+   - If the user provides only a company name, infer the market from context first; ask for confirmation only if the mapping is ambiguous
 
-2. **执行分析脚本**
+2. **Run the analysis script**
    ```bash
-   python3 {{SKILL_DIR}}/scripts/analyze_stock.py <代码> --period 6mo
+   python3 {{SKILL_DIR}}/scripts/analyze_stock.py <CODE> --period 6mo
    ```
-   可选周期参数：`1mo` / `3mo` / `6mo`（默认）/ `1y` / `2y` / `5y`
+   Optional period values: `1mo` / `3mo` / `6mo` (default) / `1y` / `2y` / `5y`
 
-   **数据与缓存机制**：原始日线 K 线、关注池、持仓数据统一保存在 `~/.stockbuddy/stockbuddy.db`（SQLite）。持仓记录通过 `watchlist_id` 关联关注股票主键。分析结果单独写入 SQLite 缓存表，默认 TTL 为 10 分钟，写入时自动清理过期缓存，并将总缓存条数控制在 1000 条以内。若用户明确要求"刷新数据"或"重新分析"，加 `--no-cache` 参数强制刷新。清除分析缓存：`--clear-cache`。
+   **Data and caching behavior**:
+   - Raw daily K-line data, watchlist data, and portfolio data are stored in `~/.stockbuddy/stockbuddy.db` (SQLite)
+   - Positions are linked through `watchlist_id`
+   - Analysis results are cached separately in SQLite with a default TTL of 10 minutes
+   - Cache cleanup runs automatically and total cached analysis rows are capped
+   - If the user explicitly asks to "refresh data" or "reanalyze", add `--no-cache`
+   - To clear analysis cache: `--clear-cache`
 
-3. **解读并呈现结果**
-   - 脚本输出 JSON 格式分析数据
-   - **默认单股分析优先使用** `references/output_templates.md` 中的 **“默认查询模板”**：先返回最重要的决策信息，必须包含：股票基本信息、基于数据面的操作建议（含评分与置信度）、重要事件、事件加持后的二次分析建议，以及最终的挂单实操建议
-   - **挂单风格默认走平衡型**：若用户未特别指定，挂单价格按 `references/output_templates.md` 中的“挂单价格生成规范”采用平衡型；只有当用户明确要求“保守版”或“激进版”时才切换
-   - **完整报告仅在用户明确要求时输出**：当用户说"完整报告"、"详细分析"、"完整分析详情"、"全量报告"等，再按同文件中的 **“完整报告组合规则”**，用多个原子模板拼装完整报告
-   - **顶部完整分析详情为必选项**：无论默认查询还是完整报告，都必须先给出 2-4 句话的自然语言完整分析详情，概括市场场景、主建议、置信度、支撑/风险点，以及是否适合立刻操作
-   - **仅当用户明确追问细节时**（如"展开讲讲"、"为什么是这个评级"、"短线怎么看"、"止盈止损怎么设"、"详细分析"），才切换为更自然的开放式解读，围绕用户追问点展开说明
-   - 最终结果直接输出为标准 Markdown 正文，不要包在代码块里；默认优先短段落、项目符号和卡片式结构，除非用户明确要求，否则不要自动展开过多宽表格
+3. **Interpret and present the result**
+   - The script returns JSON analysis data
+   - **For default single-stock requests**, use the **default query template** in `references/output_templates.md`
+   - The default response must include: stock basics, data-driven action recommendation (with score and confidence), important events, event-adjusted second-pass suggestion, and practical order ideas
+   - **Default order style = balanced**. Only switch when the user explicitly asks for a conservative or aggressive version
+   - **Only produce the full report when explicitly requested** with phrases like "full report", "detailed analysis", or "complete analysis"
+   - **The top natural-language summary is mandatory** in both short and long versions: 2-4 sentences covering regime, main recommendation, confidence, support/risk points, and whether the stock is actionable today
+   - **Only expand into a more open-ended explanation when the user asks for detail** such as "explain why", "show the reasoning", "how about short-term", or "what stop-loss/stop-profit should I use"
+   - Final output must be normal Markdown, not wrapped in code fences; prefer short paragraphs, bullet points, and card-style formatting over wide tables unless the user explicitly wants a detailed report
 
-### 场景二：持仓批量分析
+### Scenario 2: Batch Portfolio Analysis
 
-触发示例："分析我的持仓"、"看看我的股票"、"持仓怎么样了"
+Trigger examples: "analyze my portfolio", "look at my holdings", "how are my positions doing"
 
-默认输出仍以**决策优先**为主：每只持仓先给操作建议、评分/置信度、重要事件、事件修正后的二次建议，以及最简挂单实操版；除非用户明确要求详细版，否则不要把每只股票都展开成冗长全量报告。
+Default output should still be **decision-first**: for each position, give the action label, score/confidence, important events, event-adjusted second suggestion, and a compact practical order version. Do not expand every holding into a full long report unless the user explicitly wants a detailed version.
 
-**步骤：**
+**Execution realism matters more than surface correctness.** When producing portfolio advice, always consider account cash, market/currency, lot size, odd-lot support, and current share count. If the user holds only one lot and odd-lot selling is not supported, do **not** suggest "trim a little" or "sell half". Instead, output only truly executable actions such as "hold" or "sell the full lot".
 
-1. **检查持仓数据**
+**Steps:**
+
+1. **Check portfolio data**
    ```bash
    python3 {{SKILL_DIR}}/scripts/portfolio_manager.py list
    ```
-   持仓数据保存在 `~/.stockbuddy/stockbuddy.db` 的 `positions` 表。
+   Portfolio data is stored in the `positions` table in `~/.stockbuddy/stockbuddy.db`.
 
-2. **持仓为空时** → 引导用户添加持仓（参见场景三的添加操作）
+2. **If the portfolio is empty** → guide the user to add positions first (see Scenario 3)
 
-3. **执行批量分析**
+3. **Run batch analysis**
    ```bash
    python3 {{SKILL_DIR}}/scripts/portfolio_manager.py analyze
    ```
 
-4. **解读并呈现结果**
-   - 按 `references/output_templates.md` 中"持仓批量分析报告"模板呈现
-   - 直接输出为标准 Markdown 正文，不要包在代码块里；可使用规范 Markdown 表格与列表混合呈现，保证不同平台可读性
-   - 包含每只股票的操作建议和整体盈亏汇总
+4. **Interpret and present the result**
+   - Format the result using the "Portfolio Batch Analysis Report" section in `references/output_templates.md`
+   - Output normal Markdown, not code fences
+   - It may use standard Markdown tables mixed with lists when helpful, but keep it readable on chat surfaces
+   - Include stock-level recommendations and portfolio-level P&L summary
+   - Prefer **real-time computed fields** in the output: latest price, market value, unrealized P&L, position weight, and executable action constraints such as whole-lot vs odd-lot behavior
+   - Do **not** write latest price, position weight, or unrealized P&L back into durable storage; the database should only hold stable user-confirmed facts and trading rules
 
-### 场景三：持仓管理
+### Scenario 3: Position Management
 
-触发示例："添加腾讯持仓"、"我买了 100 股比亚迪"、"删除阿里持仓"
+Trigger examples: "add a Tencent position", "I bought 100 shares of BYD", "remove Alibaba from my holdings"
 
-| 操作 | 命令 |
+| Action | Command |
 |------|------|
-| 添加 | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py add <代码> --price <买入价> --shares <数量> [--date <日期>] [--note <备注>]` |
-| 查看 | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py list` |
-| 更新 | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py update <代码> [--price <价格>] [--shares <数量>] [--note <备注>]` |
-| 移除 | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py remove <代码>` |
+| Add position | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py add <CODE> --price <BUY_PRICE> --shares <SHARES> [--date <DATE>] [--note <NOTE>] [--account <ACCOUNT_NAME_OR_ID>]` |
+| List positions | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py list` |
+| Update position | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py update <CODE> [--price <PRICE>] [--shares <SHARES>] [--note <NOTE>] [--account <ACCOUNT_NAME_OR_ID>]` |
+| Remove position | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py remove <CODE>` |
+| List accounts | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py account-list` |
+| Create/update account | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py account-upsert <ACCOUNT_NAME> [--market <MARKET>] [--currency <CURRENCY>] [--cash <TOTAL_CASH>] [--available-cash <AVAILABLE_CASH>] [--note <NOTE>]` |
+| Set trading rule | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py rule-set <CODE> [--lot-size <LOT_SIZE>] [--tick-size <TICK_SIZE>] [--odd-lot]` |
 
-添加持仓时会自动确保该股票存在于关注池，并通过 `positions.watchlist_id -> watchlist.id` 关联。若用户未提供日期，默认使用当天日期。若用户提供了自然语言信息（如"我上周花 350 买了 100 股腾讯"），提取价格、数量、日期等参数后执行命令。
+When adding a position, ensure the stock exists in the watchlist and is linked through `positions.watchlist_id -> watchlist.id`. If the user does not provide a date, default to the current date. If the user provides natural-language trade info such as "I bought 100 shares of Tencent last week at 350", extract price, share count, date, and account info where possible, then execute the appropriate command.
 
-### 场景四：关注池管理
+### Scenario 4: Account and Allocation Management
 
-触发示例："关注腾讯"、"把苹果加到关注列表"、"取消关注茅台"
+Trigger examples: "my HK account has 3000 HKD cash", "track available cash", "record this under my US account", "how concentrated is my portfolio"
 
-| 操作 | 命令 |
+**Rules:**
+- Keep cash, account, market, and currency as durable facts
+- Keep position weights, market value, and unrealized P&L as computed fields
+- If the user has multiple markets or currencies, treat them as separate account contexts unless the user explicitly wants cross-account aggregation
+- Use account information to improve practical trading advice: whether the user can afford a new lot, whether a rebalance is even possible, and whether the trade would increase concentration too much
+
+### Scenario 5: Watchlist Management
+
+Trigger examples: "watch Tencent", "add Apple to my watchlist", "remove Moutai from watchlist"
+
+| Action | Command |
 |------|------|
-| 查看关注池 | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py watch-list` |
-| 添加关注 | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py watch-add <代码>` |
-| 取消关注 | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py watch-remove <代码>` |
+| List watchlist | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py watch-list` |
+| Add watch item | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py watch-add <CODE>` |
+| Remove watch item | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py watch-remove <CODE>` |
 
+## Analysis Methodology
 
-## 分析方法论
+The scoring system combines technicals (roughly 60% weight) and basic valuation (roughly 40% weight). Final score range is approximately -10 to +10:
 
-综合评分体系覆盖技术面（约 60% 权重）和基本面（约 40% 权重），最终评分范围约 -10 到 +10：
-
-| 评分区间 | 操作建议 |
+| Score Range | Recommendation |
 |----------|----------|
-| ≥ 5 | 🟢🟢 强烈买入 |
-| 2 ~ 4 | 🟢 买入 |
-| -1 ~ 1 | 🟡 持有/观望 |
-| -4 ~ -2 | 🔴 卖出 |
-| ≤ -5 | 🔴🔴 强烈卖出 |
+| ≥ 5 | 🟢🟢 Strong Buy |
+| 2 ~ 4 | 🟢 Buy |
+| -1 ~ 1 | 🟡 Hold / Watch |
+| -4 ~ -2 | 🔴 Sell |
+| ≤ -5 | 🔴🔴 Strong Sell |
 
-仅当用户要求解释评分逻辑、技术指标含义，或你需要校准开放式解读时，再读取 `references/technical_indicators.md`。
+Only read `references/technical_indicators.md` when the user asks for detailed scoring logic, indicator interpretation, or when you need help calibrating a more detailed explanation.
 
-当需要组织最终输出格式、决定默认查询 vs 完整报告、或生成挂单实操建议时，优先读取 `references/output_templates.md`；其中已经定义了默认查询模板、原子模板、完整报告组合规则，以及保守型/平衡型/激进型挂单价格生成规范（默认平衡型）。
+When deciding the final output format, choosing between default query vs full report, or generating practical order suggestions, prefer `references/output_templates.md`. It defines the default query template, atomic templates, full-report composition rules, and the conservative / balanced / aggressive order-price generation rules (balanced is the default).
 
-## 重要注意事项
+## Important Notes
 
-- 所有分析仅供参考，**不构成投资建议**
-- 数据来源以 **腾讯财经** 为主，可能存在延迟、缺口或字段局限
-- 港股没有涨跌停限制，波动风险更大
-- 每次分析结果末尾**必须**附上风险免责提示
-- 技术分析在市场极端情况下可能失效
-- 建议用户结合宏观经济环境、行业趋势和公司基本面综合判断
+- All analysis is for reference only and is **not investment advice**
+- The primary data source is **Tencent Finance**, which may have delays, gaps, or field limitations
+- Hong Kong stocks do not have the same daily price-limit structure as A-shares and therefore carry higher intraday volatility risk
+- Every final analysis output **must** include a risk disclaimer
+- Technical analysis can fail during extreme market conditions
+- Encourage the user to combine macro conditions, sector trends, and company fundamentals in final decision-making
+- If key execution constraints are missing — such as account data, cash, lot size, or odd-lot support — explicitly say the output is only a **directional recommendation**, not a complete execution-ready trading plan
+- Only store user-confirmed durable facts in the database; latest price, market value, unrealized P&L, and position weight should be fetched or calculated at analysis time
 
-## 资源文件
+## Resource Files
 
-| 文件 | 用途 |
+| File | Purpose |
 |------|------|
-| `scripts/analyze_stock.py` | 核心分析脚本，获取数据并计算技术指标和基本面评分 |
-| `scripts/portfolio_manager.py` | 持仓管理脚本，支持增删改查和批量分析 |
-| `scripts/install_deps.sh` | Python 依赖安装脚本 |
-| `references/technical_indicators.md` | 技术指标详解和评分标准 |
-| `references/output_templates.md` | 分析输出模板总控：默认查询模板、原子模板、完整报告组合规则、挂单价格生成规范 |
-| `references/data-source-roadmap.md` | 数据源升级路线图：主源 / fallback / 事件层规划；仅在需要扩展数据源或接入事件信息时读取 |
+| `scripts/analyze_stock.py` | Core analysis script for market data retrieval, technical indicators, and valuation scoring |
+| `scripts/portfolio_manager.py` | Portfolio/account/watchlist management and batch analysis entry point |
+| `scripts/install_deps.sh` | Dependency installation script |
+| `references/technical_indicators.md` | Detailed technical indicator and scoring reference |
+| `references/output_templates.md` | Output template controller: default query template, atomic templates, full-report rules, and practical order generation rules |
+| `references/data-source-roadmap.md` | Data-source roadmap for primary/fallback/event-layer evolution; read only when extending data sources or event coverage |
