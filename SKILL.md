@@ -9,17 +9,42 @@ description: Multi-market stock analysis and portfolio execution assistant for C
 
 StockBuddy is a stock analysis and portfolio execution support skill for A-share, Hong Kong, and US equities. It outputs quantified scores and clear action labels (Strong Buy / Buy / Hold / Sell / Strong Sell). By default, responses are **decision-first**: give the concise conclusion, score/confidence, event-adjusted second-pass suggestion, and practical order ideas before expanding into a long-form report.
 
-**Design principle: separate durable facts from real-time derived values.**
-- **Persist durable facts**: share count, cost basis, account, cash balance, market/currency, lot size, odd-lot support, and other user-confirmed trading constraints
+**Core rule: separate durable facts from derived values.**
+- **Persist durable facts**: share count, cost basis, account, available cash, market/currency, lot size, odd-lot support, and other user-confirmed trading constraints
 - **Compute in real time**: latest price, market value, position weight, unrealized P&L, executable buy/sell size, and whether partial selling is actually possible
-- Do **not** write latest price, position weight, or unrealized P&L back as durable truth in the database; compute them during analysis to avoid stale data and hallucination drift
+- Do **not** write latest price, position weight, or unrealized P&L back into durable storage
 
 Five core scenarios:
-1. **Single-stock analysis** — Analyze one stock with technical + basic valuation signals and produce an action recommendation
-2. **Batch portfolio analysis** — Analyze all current positions and summarize both stock-level actions and overall portfolio status
-3. **Position management** — Add, update, remove, and inspect positions
-4. **Account and allocation management** — Track account, cash, market/currency, and use them to compute position weights and execution constraints
-5. **Watchlist management** — Add, remove, and inspect watched stocks while storing basic stock metadata and trading rules
+1. **Single-stock analysis** — analyze one stock and produce an action recommendation
+2. **Batch portfolio analysis** — analyze current positions and summarize stock-level and portfolio-level status
+3. **Position management** — add, update, remove, and inspect positions
+4. **Account and allocation management** — track account, cash, market/currency, and execution constraints
+5. **Watchlist management** — add, remove, and inspect watched stocks while storing basic stock metadata and trading rules
+
+## Execution-Aware Advice Rules
+
+Before giving execution-ready trading advice, confirm whether the durable constraints are sufficient.
+
+**Required durable facts for execution-aware advice:**
+- account context
+- market / currency
+- available cash for the account
+- lot size
+- odd-lot support when relevant
+
+**If these are incomplete:**
+- still give a directional view when possible
+- label it as **directional only** or **non-execution-ready**
+- ask only for the missing durable facts
+- do not invent quantity, allocation, or partial-sell actions that may be impossible in the real market setup
+
+**Special rule for buy advice:**
+- If available cash is unknown, do not provide quantity, allocation, or order-size advice.
+- Ask for the account plus available cash first.
+
+**Special rule for sell/trim advice:**
+- If lot size or odd-lot support is unknown, avoid suggesting partial sells as if they are definitely executable.
+- If the user holds only one lot and odd-lot selling is not supported, suggest only executable actions such as hold or sell the full lot.
 
 ## Environment Setup
 
@@ -76,8 +101,6 @@ Trigger examples: "analyze my portfolio", "look at my holdings", "how are my pos
 
 Default output should still be **decision-first**: for each position, give the action label, score/confidence, important events, event-adjusted second suggestion, and a compact practical order version. Do not expand every holding into a full long report unless the user explicitly wants a detailed version.
 
-**Execution realism matters more than surface correctness.** When producing portfolio advice, always consider account cash, market/currency, lot size, odd-lot support, and current share count. If the user holds only one lot and odd-lot selling is not supported, do **not** suggest "trim a little" or "sell half". Instead, output only truly executable actions such as "hold" or "sell the full lot".
-
 **Steps:**
 
 1. **Check portfolio data**
@@ -116,6 +139,20 @@ Trigger examples: "add a Tencent position", "I bought 100 shares of BYD", "remov
 | Set trading rule | `python3 {{SKILL_DIR}}/scripts/portfolio_manager.py rule-set <CODE> [--lot-size <LOT_SIZE>] [--tick-size <TICK_SIZE>] [--odd-lot]` |
 
 When adding a position, ensure the stock exists in the watchlist and is linked through `positions.watchlist_id -> watchlist.id`. If the user does not provide a date, default to the current date. If the user provides natural-language trade info such as "I bought 100 shares of Tencent last week at 350", extract price, share count, date, and account info where possible, then execute the appropriate command.
+
+**After the first successful position record, proactively guide the user to fill the missing durable facts needed for execution-aware advice.** Do not stop at only code / shares / cost if important constraints are still unknown.
+
+Ask for or help the user confirm these fields, in this priority order:
+1. **Account context** — which account this belongs to, and its market / currency
+2. **Cash** — total cash or available cash in that account
+3. **Lot rule** — lot size for the stock
+4. **Odd-lot support** — whether the broker supports odd-lot selling / buying
+5. **Trade date** — if omitted and relevant for later review
+6. **Notes** — optional thesis, time horizon, or special constraints
+
+If some fields are already known, only ask for the missing ones. Keep the follow-up compact: confirm what was captured, state what is still missing, and ask for the missing durable facts in one short message.
+
+If the user gives only partial follow-up info, update what is available and continue asking only for the remaining missing fields. Once enough execution constraints are known, stop prompting and proceed normally.
 
 ### Scenario 4: Account and Allocation Management
 
@@ -161,7 +198,6 @@ When deciding the final output format, choosing between default query vs full re
 - Every final analysis output **must** include a risk disclaimer
 - Technical analysis can fail during extreme market conditions
 - Encourage the user to combine macro conditions, sector trends, and company fundamentals in final decision-making
-- If key execution constraints are missing — such as account data, cash, lot size, or odd-lot support — explicitly say the output is only a **directional recommendation**, not a complete execution-ready trading plan
 - Only store user-confirmed durable facts in the database; latest price, market value, unrealized P&L, and position weight should be fetched or calculated at analysis time
 
 ## Resource Files
